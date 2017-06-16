@@ -3,6 +3,7 @@ package com.hackday.android.transcriber.app;
 import android.Manifest;
 import android.content.Context;
 import android.content.pm.PackageManager;
+import android.media.AudioFormat;
 import android.media.MediaPlayer;
 import android.media.MediaRecorder;
 import android.os.Bundle;
@@ -15,6 +16,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.LinearLayout;
 
+import java.io.File;
 import java.io.IOException;
 
 public class MainActivity extends AppCompatActivity {
@@ -25,7 +27,10 @@ public class MainActivity extends AppCompatActivity {
     private static String mFileName = null;
 
     private RecordButton mRecordButton = null;
+/*
     private MediaRecorder mRecorder = null;
+*/
+    private ExtAudioRecorder eaRecorder = null;
 
     private PlayButton   mPlayButton = null;
     private MediaPlayer   mPlayer = null;
@@ -79,6 +84,11 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void startRecording() {
+        eaRecorder = new ExtAudioRecorder(true, MediaRecorder.AudioSource.MIC, 16000, 1, AudioFormat.ENCODING_PCM_16BIT);
+        eaRecorder.setOutputFile(mFileName);
+        eaRecorder.prepare();
+        eaRecorder.start();
+        /*
         mRecorder = new MediaRecorder();
         mRecorder.setAudioSource(MediaRecorder.AudioSource.MIC);
         mRecorder.setOutputFormat(MediaRecorder.OutputFormat.THREE_GPP);
@@ -92,12 +102,18 @@ public class MainActivity extends AppCompatActivity {
         }
 
         mRecorder.start();
+*/
     }
 
     private void stopRecording() {
+        eaRecorder.stop();
+        eaRecorder.release();
+        eaRecorder = null;
+/*
         mRecorder.stop();
         mRecorder.release();
         mRecorder = null;
+*/
     }
 
     class RecordButton extends AppCompatButton {
@@ -150,7 +166,7 @@ public class MainActivity extends AppCompatActivity {
 
         // Record to the external cache directory for visibility
         mFileName = getExternalCacheDir().getAbsolutePath();
-        mFileName += "/audiorecordtest.3gp";
+        mFileName += "/audiorecordtest.wav";
 
         ActivityCompat.requestPermissions(this, permissions, REQUEST_RECORD_AUDIO_PERMISSION);
 
@@ -173,10 +189,16 @@ public class MainActivity extends AppCompatActivity {
     @Override
     public void onStop() {
         super.onStop();
+        if (eaRecorder != null) {
+            eaRecorder.release();
+            eaRecorder = null;
+        }
+/*
         if (mRecorder != null) {
             mRecorder.release();
             mRecorder = null;
         }
+*/
 
         if (mPlayer != null) {
             mPlayer.release();
