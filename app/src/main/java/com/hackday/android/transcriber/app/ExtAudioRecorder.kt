@@ -24,7 +24,8 @@ class ExtAudioRecorder
     companion object {
         private val sampleRates = intArrayOf(44100, 22050, 11025, 8000)
 
-        fun getInstanse(recordingCompressed: Boolean?): ExtAudioRecorder {
+        @JvmStatic
+        fun getInstance(recordingCompressed: Boolean?): ExtAudioRecorder {
             var result: ExtAudioRecorder? = null
 
             if (recordingCompressed!!) {
@@ -47,7 +48,10 @@ class ExtAudioRecorder
             return result
         }
 
+        @JvmField
         val RECORDING_UNCOMPRESSED = true
+
+        @JvmField
         val RECORDING_COMPRESSED = false
 
         // The interval in which the recorded samples are output to the file
