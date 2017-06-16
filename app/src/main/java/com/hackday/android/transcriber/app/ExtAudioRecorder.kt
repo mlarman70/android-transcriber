@@ -25,10 +25,10 @@ class ExtAudioRecorder
         private val sampleRates = intArrayOf(44100, 22050, 11025, 8000)
 
         @JvmStatic
-        fun getInstance(recordingCompressed: Boolean?): ExtAudioRecorder {
+        fun getInstance(recordingUnCompressed: Boolean): ExtAudioRecorder {
             var result: ExtAudioRecorder? = null
 
-            if (recordingCompressed!!) {
+            if (!recordingUnCompressed) {
                 result = ExtAudioRecorder(false,
                         AudioSource.MIC,
                         sampleRates[3],

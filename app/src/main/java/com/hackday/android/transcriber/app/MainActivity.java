@@ -3,7 +3,9 @@ package com.hackday.android.transcriber.app;
 import android.Manifest;
 import android.content.Context;
 import android.content.pm.PackageManager;
+import android.media.AudioFormat;
 import android.media.MediaPlayer;
+import android.media.MediaRecorder;
 import android.os.Bundle;
 import android.support.annotation.NonNull;
 import android.support.v4.app.ActivityCompat;
@@ -143,7 +145,7 @@ public class MainActivity extends AppCompatActivity {
 
         // Record to the external cache directory for visibility
         mFileName = getExternalCacheDir().getAbsolutePath();
-        mFileName += "/audiorecordtest_3.wav";
+        mFileName += "/audiorecordtest_8.wav";
 
         ActivityCompat.requestPermissions(this, permissions, REQUEST_RECORD_AUDIO_PERMISSION);
 
