@@ -148,18 +148,25 @@ class ExtAudioRecorder
                 randomAccessWriter.write(buffer) // Write buffer to file
                 payloadSize += buffer.size
                 if (bSamples.toInt() == 16) {
-                    for (i in 0..buffer.size / 2 - 1) { // 16bit sample size
-                        val curSample = getShort(buffer[i * 2], buffer[i * 2 + 1])
-                        if (curSample > cAmplitude) { // Check amplitude
-                            cAmplitude = curSample.toInt()
-                        }
-                    }
+                    (0..buffer.size / 2 - 1)
+                            .asSequence()
+                            .map {
+                                // 16bit sample size
+                                getShort(buffer[it * 2], buffer[it * 2 + 1])
+                            }
+                            .filter { it > cAmplitude }
+                            .forEach {
+                                // Check amplitude
+                                cAmplitude = it.toInt()
+                            }
                 } else { // 8bit sample size
-                    for (i in buffer.indices) {
-                        if (buffer[i] > cAmplitude) { // Check amplitude
-                            cAmplitude = buffer[i].toInt()
-                        }
-                    }
+                    buffer.indices
+                            .asSequence()
+                            .filter { buffer[it] > cAmplitude }
+                            .forEach {
+                                // Check amplitude
+                                cAmplitude = buffer[it].toInt()
+                            }
                 }
             } catch (e: IOException) {
                 Log.e(ExtAudioRecorder::class.java.name, "Error occured in updateListener, recording is aborted")
@@ -179,13 +186,12 @@ class ExtAudioRecorder
             byteBuffer.put(buffer, 0, remaining)
             val chunkFile = dumpBufferToFile()
 
-            byteBuffer.rewind()
             byteBuffer.put(buffer, remaining, buffer.size - remaining)
 
             return chunkFile
         }
 
-        byteBuffer.put(buffer)
+        byteBuffer.put(buffer, 0, buffer.size)
 
         return null
     }
@@ -201,6 +207,8 @@ class ExtAudioRecorder
             channel.write(byteBuffer)
         }
 
+        byteBuffer.flip()
+        byteBuffer.clear()
         return chunkFile
     }
 
@@ -448,7 +456,7 @@ class ExtAudioRecorder
             if (rUncompressed) {
                 payloadSize = 0
                 audioRecorder!!.startRecording()
-                audioRecorder!!.read(buffer!!, 0, buffer!!.size)
+                audioRecorder!!.read(buffer, 0, buffer.size)
             } else {
                 mediaRecorder!!.start()
             }
@@ -472,6 +480,12 @@ class ExtAudioRecorder
             if (rUncompressed) {
                 audioRecorder!!.stop()
 
+                val chunkFile = dumpBufferToFile()
+
+                chunkFile.takeIf { it.length() > 0 }?.let { chunk ->
+                    listeners.forEach { it.onChunk(chunk) }
+                }
+
                 try {
                     randomAccessWriter.seek(4) // Write size to RIFF header
                     randomAccessWriter.writeInt(Integer.reverseBytes(36 + payloadSize))
@@ -480,12 +494,6 @@ class ExtAudioRecorder
                     randomAccessWriter.writeInt(Integer.reverseBytes(payloadSize))
 
                     randomAccessWriter.close()
-
-                    val finalChunk = dumpBufferToFile()
-
-                    finalChunk.takeIf { it.length() > 0 }?.let { chunk ->
-                        listeners.forEach { it.onChunk(chunk) }
-                    }
 
                 } catch (e: IOException) {
                     Log.e(ExtAudioRecorder::class.java.name, "I/O exception occured while closing output file")
