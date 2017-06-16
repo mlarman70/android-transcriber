@@ -1,14 +1,17 @@
 package com.hackday.android.transcriber.app
 
-import java.io.File
-import java.io.IOException
-import java.io.RandomAccessFile
-
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.media.MediaRecorder.AudioSource
+import android.provider.MediaStore
 import android.util.Log
+import java.io.File
+import java.io.FileOutputStream
+import java.io.IOException
+import java.io.RandomAccessFile
+import java.nio.ByteBuffer
+import java.nio.channels.FileChannel
 import kotlin.experimental.or
 
 class ExtAudioRecorder
@@ -97,7 +100,9 @@ class ExtAudioRecorder
         private set
 
     // File writer (only in uncompressed mode)
-    private var randomAccessWriter: RandomAccessFile? = null
+    private lateinit var randomAccessWriter: RandomAccessFile
+    private lateinit var chunkPath: File
+    private var chunkCounter: Int = 0
 
     // Number of channels, sample rate, sample size(size in bits), buffer size, audio source, sample size(see AudioFormat)
     private var nChannels: Short = 0
@@ -111,11 +116,19 @@ class ExtAudioRecorder
     private var framePeriod: Int = 0
 
     // Buffer for output(only in uncompressed mode)
-    private var buffer: ByteArray? = null
+    private lateinit var buffer: ByteArray
+
+    private val byteBuffer = ByteBuffer.allocate(320 * 1024)
 
     // Number of bytes written to file after header(only in uncompressed mode)
     // after stop() is called, this size is written to the header/data chunk in the wave file
     private var payloadSize: Int = 0
+
+    private val listeners: MutableSet<ChunkListener> = mutableSetOf()
+
+    fun addChunkListener(listener: ChunkListener) {
+        listeners.add(listener)
+    }
 
     /*
     *
@@ -124,21 +137,27 @@ class ExtAudioRecorder
     */
     private val updateListener = object : AudioRecord.OnRecordPositionUpdateListener {
         override fun onPeriodicNotification(recorder: AudioRecord) {
-            audioRecorder!!.read(buffer!!, 0, buffer!!.size) // Fill buffer
+            audioRecorder!!.read(buffer, 0, buffer.size) // Fill buffer
+            val chunkFile: File? = writeToBuffer(buffer)
+
+            chunkFile?.let {
+                listeners.forEach { it.onChunk(chunkFile) }
+            }
+
             try {
-                randomAccessWriter!!.write(buffer) // Write buffer to file
-                payloadSize += buffer!!.size
+                randomAccessWriter.write(buffer) // Write buffer to file
+                payloadSize += buffer.size
                 if (bSamples.toInt() == 16) {
-                    for (i in 0..buffer!!.size / 2 - 1) { // 16bit sample size
-                        val curSample = getShort(buffer!![i * 2], buffer!![i * 2 + 1])
+                    for (i in 0..buffer.size / 2 - 1) { // 16bit sample size
+                        val curSample = getShort(buffer[i * 2], buffer[i * 2 + 1])
                         if (curSample > cAmplitude) { // Check amplitude
                             cAmplitude = curSample.toInt()
                         }
                     }
                 } else { // 8bit sample size
-                    for (i in buffer!!.indices) {
-                        if (buffer!![i] > cAmplitude) { // Check amplitude
-                            cAmplitude = buffer!![i].toInt()
+                    for (i in buffer.indices) {
+                        if (buffer[i] > cAmplitude) { // Check amplitude
+                            cAmplitude = buffer[i].toInt()
                         }
                     }
                 }
@@ -152,6 +171,37 @@ class ExtAudioRecorder
         override fun onMarkerReached(recorder: AudioRecord) {
             // NOT USED
         }
+    }
+
+    private fun writeToBuffer(buffer: ByteArray): File? {
+        if (byteBuffer.position() + buffer.size > byteBuffer.capacity()) {
+            val remaining = byteBuffer.remaining()
+            byteBuffer.put(buffer, 0, remaining)
+            val chunkFile = dumpBufferToFile()
+
+            byteBuffer.rewind()
+            byteBuffer.put(buffer, remaining, buffer.size - remaining)
+
+            return chunkFile
+        }
+
+        byteBuffer.put(buffer)
+
+        return null
+    }
+
+    private fun dumpBufferToFile(): File {
+        val chunkFile = File(chunkPath, "chunk_" + (++chunkCounter) + ".pcm16")
+
+        val channel = FileOutputStream(chunkFile).channel
+
+        byteBuffer.flip()
+
+        channel.use {
+            channel.write(byteBuffer)
+        }
+
+        return chunkFile
     }
 
     init {
@@ -274,23 +324,28 @@ class ExtAudioRecorder
                 if (rUncompressed) {
                     if ((audioRecorder!!.state == AudioRecord.STATE_INITIALIZED) and (filePath != null)) {
                         // write file header
+                        val audioFile = File(filePath)
+                        chunkPath = File.createTempFile("chunks-", "", audioFile.parentFile)
+                        chunkPath.delete()
+
+                        chunkPath.mkdirs()
 
                         randomAccessWriter = RandomAccessFile(filePath, "rw")
 
-                        randomAccessWriter!!.setLength(0) // Set file length to 0, to prevent unexpected behavior in case the file already existed
-                        randomAccessWriter!!.writeBytes("RIFF")
-                        randomAccessWriter!!.writeInt(0) // Final file size not known yet, write 0
-                        randomAccessWriter!!.writeBytes("WAVE")
-                        randomAccessWriter!!.writeBytes("fmt ")
-                        randomAccessWriter!!.writeInt(Integer.reverseBytes(16)) // Sub-chunk size, 16 for PCM
-                        randomAccessWriter!!.writeShort(java.lang.Short.reverseBytes(1.toShort()).toInt()) // AudioFormat, 1 for PCM
-                        randomAccessWriter!!.writeShort(java.lang.Short.reverseBytes(nChannels).toInt())// Number of channels, 1 for mono, 2 for stereo
-                        randomAccessWriter!!.writeInt(Integer.reverseBytes(sRate)) // Sample rate
-                        randomAccessWriter!!.writeInt(Integer.reverseBytes(sRate * bSamples.toInt() * nChannels.toInt() / 8)) // Byte rate, SampleRate*NumberOfChannels*BitsPerSample/8
-                        randomAccessWriter!!.writeShort(java.lang.Short.reverseBytes((nChannels * bSamples / 8).toShort()).toInt()) // Block align, NumberOfChannels*BitsPerSample/8
-                        randomAccessWriter!!.writeShort(java.lang.Short.reverseBytes(bSamples).toInt()) // Bits per sample
-                        randomAccessWriter!!.writeBytes("data")
-                        randomAccessWriter!!.writeInt(0) // Data chunk size not known yet, write 0
+                        randomAccessWriter.setLength(0) // Set file length to 0, to prevent unexpected behavior in case the file already existed
+                        randomAccessWriter.writeBytes("RIFF")
+                        randomAccessWriter.writeInt(0) // Final file size not known yet, write 0
+                        randomAccessWriter.writeBytes("WAVE")
+                        randomAccessWriter.writeBytes("fmt ")
+                        randomAccessWriter.writeInt(Integer.reverseBytes(16)) // Sub-chunk size, 16 for PCM
+                        randomAccessWriter.writeShort(java.lang.Short.reverseBytes(1.toShort()).toInt()) // AudioFormat, 1 for PCM
+                        randomAccessWriter.writeShort(java.lang.Short.reverseBytes(nChannels).toInt())// Number of channels, 1 for mono, 2 for stereo
+                        randomAccessWriter.writeInt(Integer.reverseBytes(sRate)) // Sample rate
+                        randomAccessWriter.writeInt(Integer.reverseBytes(sRate * bSamples.toInt() * nChannels.toInt() / 8)) // Byte rate, SampleRate*NumberOfChannels*BitsPerSample/8
+                        randomAccessWriter.writeShort(java.lang.Short.reverseBytes((nChannels * bSamples / 8).toShort()).toInt()) // Block align, NumberOfChannels*BitsPerSample/8
+                        randomAccessWriter.writeShort(java.lang.Short.reverseBytes(bSamples).toInt()) // Bits per sample
+                        randomAccessWriter.writeBytes("data")
+                        randomAccessWriter.writeInt(0) // Data chunk size not known yet, write 0
 
                         buffer = ByteArray(framePeriod * bSamples / 8 * nChannels)
                         state = State.READY
@@ -330,7 +385,7 @@ class ExtAudioRecorder
         } else {
             if ((state == State.READY) and rUncompressed) {
                 try {
-                    randomAccessWriter!!.close() // Remove prepared file
+                    randomAccessWriter.close() // Remove prepared file
                 } catch (e: IOException) {
                     Log.e(ExtAudioRecorder::class.java.name, "I/O exception occured while closing output file")
                 }
@@ -418,13 +473,20 @@ class ExtAudioRecorder
                 audioRecorder!!.stop()
 
                 try {
-                    randomAccessWriter!!.seek(4) // Write size to RIFF header
-                    randomAccessWriter!!.writeInt(Integer.reverseBytes(36 + payloadSize))
+                    randomAccessWriter.seek(4) // Write size to RIFF header
+                    randomAccessWriter.writeInt(Integer.reverseBytes(36 + payloadSize))
 
-                    randomAccessWriter!!.seek(40) // Write size to Subchunk2Size field
-                    randomAccessWriter!!.writeInt(Integer.reverseBytes(payloadSize))
+                    randomAccessWriter.seek(40) // Write size to Subchunk2Size field
+                    randomAccessWriter.writeInt(Integer.reverseBytes(payloadSize))
 
-                    randomAccessWriter!!.close()
+                    randomAccessWriter.close()
+
+                    val finalChunk = dumpBufferToFile()
+
+                    finalChunk.takeIf { it.length() > 0 }?.let { chunk ->
+                        listeners.forEach { it.onChunk(chunk) }
+                    }
+
                 } catch (e: IOException) {
                     Log.e(ExtAudioRecorder::class.java.name, "I/O exception occured while closing output file")
                     state = State.ERROR
@@ -449,4 +511,7 @@ class ExtAudioRecorder
         return (argB1 or (argB2.toInt().shl(8)).toByte()).toShort()
     }
 
+    interface ChunkListener {
+        fun onChunk(chunkFile: File)
+    }
 }

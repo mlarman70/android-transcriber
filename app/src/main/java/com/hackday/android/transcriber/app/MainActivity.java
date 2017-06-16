@@ -11,11 +11,15 @@ import android.support.annotation.NonNull;
 import android.support.v4.app.ActivityCompat;
 import android.support.v7.app.AppCompatActivity;
 import android.support.v7.widget.AppCompatButton;
+import android.support.v7.widget.AppCompatTextView;
 import android.util.Log;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.LinearLayout;
 
+import org.jetbrains.annotations.NotNull;
+
+import java.io.File;
 import java.io.IOException;
 
 public class MainActivity extends AppCompatActivity {
@@ -26,27 +30,31 @@ public class MainActivity extends AppCompatActivity {
     private static String mFileName = null;
 
     private RecordButton mRecordButton = null;
-/*
-    private MediaRecorder mRecorder = null;
-*/
+    /*
+        private MediaRecorder mRecorder = null;
+    */
     private ExtAudioRecorder eaRecorder = null;
 
-    private PlayButton   mPlayButton = null;
-    private MediaPlayer   mPlayer = null;
+    private PlayButton mPlayButton = null;
+    private ChunkCounter mChunkCounter = null;
+
+    private int countOfChunks = 0;
+
+    private MediaPlayer mPlayer = null;
 
     // Requesting permission to RECORD_AUDIO
     private boolean permissionToRecordAccepted = false;
-    private String [] permissions = {Manifest.permission.RECORD_AUDIO};
+    private String[] permissions = {Manifest.permission.RECORD_AUDIO};
 
     @Override
     public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        switch (requestCode){
+        switch (requestCode) {
             case REQUEST_RECORD_AUDIO_PERMISSION:
-                permissionToRecordAccepted  = grantResults[0] == PackageManager.PERMISSION_GRANTED;
+                permissionToRecordAccepted = grantResults[0] == PackageManager.PERMISSION_GRANTED;
                 break;
         }
-        if (!permissionToRecordAccepted ) finish();
+        if (!permissionToRecordAccepted) finish();
 
     }
 
@@ -84,6 +92,13 @@ public class MainActivity extends AppCompatActivity {
 
     private void startRecording() {
         eaRecorder = ExtAudioRecorder.getInstance(ExtAudioRecorder.RECORDING_UNCOMPRESSED);
+        eaRecorder.addChunkListener(new ExtAudioRecorder.ChunkListener() {
+            @Override
+            public void onChunk(@NotNull File chunkFile) {
+                chunkArrived(chunkFile);
+            }
+        });
+
         eaRecorder.setOutputFile(mFileName);
         eaRecorder.prepare();
         eaRecorder.start();
@@ -93,6 +108,11 @@ public class MainActivity extends AppCompatActivity {
         eaRecorder.stop();
         eaRecorder.release();
         eaRecorder = null;
+    }
+
+    private void chunkArrived(File chunkFile) {
+        countOfChunks++;
+        mChunkCounter.setText(Integer.toString(countOfChunks));
     }
 
     class RecordButton extends AppCompatButton {
@@ -139,14 +159,20 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    class ChunkCounter extends AppCompatTextView {
+        public ChunkCounter(Context ctx) {
+            super(ctx);
+            setText(Integer.toString(countOfChunks));
+        }
+    }
+
     @Override
     public void onCreate(Bundle icicle) {
         super.onCreate(icicle);
 
         // Record to the external cache directory for visibility
         mFileName = getExternalCacheDir().getAbsolutePath();
-        mFileName += "/audiorecordtest_8.wav";
-
+        mFileName += "/audiorecordtest_9.wav";
         ActivityCompat.requestPermissions(this, permissions, REQUEST_RECORD_AUDIO_PERMISSION);
 
         LinearLayout ll = new LinearLayout(this);
@@ -162,6 +188,14 @@ public class MainActivity extends AppCompatActivity {
                         ViewGroup.LayoutParams.WRAP_CONTENT,
                         ViewGroup.LayoutParams.WRAP_CONTENT,
                         0));
+
+        mChunkCounter = new ChunkCounter(this);
+        ll.addView(mChunkCounter,
+                new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        0));
+
         setContentView(ll);
     }
 
