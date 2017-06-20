@@ -3,9 +3,7 @@ package com.hackday.android.transcriber.app;
 import android.Manifest;
 import android.content.Context;
 import android.content.pm.PackageManager;
-import android.media.AudioFormat;
 import android.media.MediaPlayer;
-import android.media.MediaRecorder;
 import android.os.Bundle;
 import android.support.annotation.NonNull;
 import android.support.v4.app.ActivityCompat;
@@ -91,7 +89,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void startRecording() {
-        eaRecorder = ExtAudioRecorder.getInstance(ExtAudioRecorder.RECORDING_UNCOMPRESSED);
+        eaRecorder = ExtAudioRecorder.getInstance();
         eaRecorder.addChunkListener(new ExtAudioRecorder.ChunkListener() {
             @Override
             public void onChunk(@NotNull File chunkFile) {

@@ -2,16 +2,13 @@ package com.hackday.android.transcriber.app
 
 import android.media.AudioFormat
 import android.media.AudioRecord
-import android.media.MediaRecorder
 import android.media.MediaRecorder.AudioSource
-import android.provider.MediaStore
 import android.util.Log
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 import java.io.RandomAccessFile
 import java.nio.ByteBuffer
-import java.nio.channels.FileChannel
 import kotlin.experimental.or
 
 class ExtAudioRecorder
@@ -22,40 +19,29 @@ class ExtAudioRecorder
  * In case of errors, no exception is thrown, but the state is set to ERROR
 
  */
-(uncompressed: Boolean, audioSource: Int, sampleRate: Int, channelConfig: Int, audioFormat: Int) {
+(audioSource: Int, sampleRate: Int, channelConfig: Int, audioFormat: Int) {
 
     companion object {
         private val sampleRates = intArrayOf(44100, 22050, 11025, 8000)
 
         @JvmStatic
-        fun getInstance(recordingUnCompressed: Boolean): ExtAudioRecorder {
-            var result: ExtAudioRecorder? = null
+        fun getInstance(): ExtAudioRecorder {
+            var result: ExtAudioRecorder
 
-            if (!recordingUnCompressed) {
-                result = ExtAudioRecorder(false,
-                        AudioSource.MIC,
-                        sampleRates[3],
+            var i = 0
+            do {
+                result = ExtAudioRecorder(AudioSource.MIC,
+                        sampleRates[i],
                         AudioFormat.CHANNEL_CONFIGURATION_MONO,
                         AudioFormat.ENCODING_PCM_16BIT)
-            } else {
-                var i = 0
-                do {
-                    result = ExtAudioRecorder(true,
-                            AudioSource.MIC,
-                            sampleRates[i],
-                            AudioFormat.CHANNEL_CONFIGURATION_MONO,
-                            AudioFormat.ENCODING_PCM_16BIT)
 
-                } while ((++i < sampleRates.size) and (result!!.state != ExtAudioRecorder.State.INITIALIZING))
-            }
+            } while ((++i < sampleRates.size) and (result.state != ExtAudioRecorder.State.INITIALIZING))
+
             return result
         }
 
         @JvmField
         val RECORDING_UNCOMPRESSED = true
-
-        @JvmField
-        val RECORDING_COMPRESSED = false
 
         // The interval in which the recorded samples are output to the file
         // Used only in uncompressed mode
@@ -73,14 +59,8 @@ class ExtAudioRecorder
         INITIALIZING, READY, RECORDING, ERROR, STOPPED
     }
 
-    // Toggles uncompressed recording on/off; RECORDING_UNCOMPRESSED / RECORDING_COMPRESSED
-    private var rUncompressed: Boolean = false
-
     // Recorder used for uncompressed recording
-    private var audioRecorder: AudioRecord? = null
-
-    // Recorder used for compressed recording
-    private var mediaRecorder: MediaRecorder? = null
+    private lateinit var audioRecorder: AudioRecord
 
     // Stores current amplitude (only in uncompressed mode)
     private var cAmplitude = 0
@@ -137,7 +117,7 @@ class ExtAudioRecorder
     */
     private val updateListener = object : AudioRecord.OnRecordPositionUpdateListener {
         override fun onPeriodicNotification(recorder: AudioRecord) {
-            audioRecorder!!.read(buffer, 0, buffer.size) // Fill buffer
+            audioRecorder.read(buffer, 0, buffer.size) // Fill buffer
             val chunkFile: File? = writeToBuffer(buffer)
 
             chunkFile?.let {
@@ -169,7 +149,7 @@ class ExtAudioRecorder
                             }
                 }
             } catch (e: IOException) {
-                Log.e(ExtAudioRecorder::class.java.name, "Error occured in updateListener, recording is aborted")
+                Log.e(ExtAudioRecorder::class.java.name, "Error occurred in updateListener, recording is aborted")
                 //stop();
             }
 
@@ -181,8 +161,9 @@ class ExtAudioRecorder
     }
 
     private fun writeToBuffer(buffer: ByteArray): File? {
-        if (byteBuffer.position() + buffer.size > byteBuffer.capacity()) {
-            val remaining = byteBuffer.remaining()
+        val remaining = byteBuffer.remaining()
+
+        if (buffer.size > remaining) {
             byteBuffer.put(buffer, 0, remaining)
             val chunkFile = dumpBufferToFile()
 
@@ -199,96 +180,71 @@ class ExtAudioRecorder
     private fun dumpBufferToFile(): File {
         val chunkFile = File(chunkPath, "chunk_" + (++chunkCounter) + ".pcm16")
 
-        val channel = FileOutputStream(chunkFile).channel
-
         byteBuffer.flip()
+        FileOutputStream(chunkFile).channel.use {
+            while (byteBuffer.remaining() > 0) {
+                it.write(byteBuffer)
+            }
 
-        channel.use {
-            channel.write(byteBuffer)
+            it.force(false)
         }
 
-        byteBuffer.flip()
         byteBuffer.clear()
         return chunkFile
     }
 
     init {
         try {
-            rUncompressed = uncompressed
-            if (rUncompressed) { // RECORDING_UNCOMPRESSED
-                if (audioFormat == AudioFormat.ENCODING_PCM_16BIT) {
-                    bSamples = 16
-                } else {
-                    bSamples = 8
-                }
-
-                if (channelConfig == AudioFormat.CHANNEL_CONFIGURATION_MONO) {
-                    nChannels = 1
-                } else {
-                    nChannels = 2
-                }
-
-                aSource = audioSource
-                sRate = sampleRate
-                aFormat = audioFormat
-
-                framePeriod = sampleRate * TIMER_INTERVAL / 1000
-                bufferSize = framePeriod * 2 * bSamples.toInt() * nChannels.toInt() / 8
-                if (bufferSize < AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)) { // Check to make sure buffer size is not smaller than the smallest allowed one
-                    bufferSize = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)
-                    // Set frame period and timer interval accordingly
-                    framePeriod = bufferSize / (2 * bSamples.toInt() * nChannels.toInt() / 8)
-                    Log.w(ExtAudioRecorder::class.java.name, "Increasing buffer size to " + Integer.toString(bufferSize))
-                }
-
-                audioRecorder = AudioRecord(audioSource, sampleRate, channelConfig, audioFormat, bufferSize)
-
-                if (audioRecorder!!.state != AudioRecord.STATE_INITIALIZED)
-                    throw Exception("AudioRecord initialization failed")
-                audioRecorder!!.setRecordPositionUpdateListener(updateListener)
-                audioRecorder!!.positionNotificationPeriod = framePeriod
-            } else { // RECORDING_COMPRESSED
-                mediaRecorder = MediaRecorder()
-                mediaRecorder!!.setAudioSource(MediaRecorder.AudioSource.MIC)
-                mediaRecorder!!.setOutputFormat(MediaRecorder.OutputFormat.THREE_GPP)
-                mediaRecorder!!.setAudioEncoder(MediaRecorder.AudioEncoder.AMR_NB)
+            if (audioFormat == AudioFormat.ENCODING_PCM_16BIT) {
+                bSamples = 16
+            } else {
+                bSamples = 8
             }
+
+            if (channelConfig == AudioFormat.CHANNEL_CONFIGURATION_MONO) {
+                nChannels = 1
+            } else {
+                nChannels = 2
+            }
+
+            aSource = audioSource
+            sRate = sampleRate
+            aFormat = audioFormat
+
+            framePeriod = sampleRate * TIMER_INTERVAL / 1000
+            bufferSize = framePeriod * 2 * bSamples.toInt() * nChannels.toInt() / 8
+            if (bufferSize < AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)) { // Check to make sure buffer size is not smaller than the smallest allowed one
+                bufferSize = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)
+                // Set frame period and timer interval accordingly
+                framePeriod = bufferSize / (2 * bSamples.toInt() * nChannels.toInt() / 8)
+                Log.w(ExtAudioRecorder::class.java.name, "Increasing buffer size to " + Integer.toString(bufferSize))
+            }
+
+            audioRecorder = AudioRecord(audioSource, sampleRate, channelConfig, audioFormat, bufferSize)
+
+            if (audioRecorder.state != AudioRecord.STATE_INITIALIZED)
+                throw Exception("AudioRecord initialization failed")
+            audioRecorder.setRecordPositionUpdateListener(updateListener)
+            audioRecorder.positionNotificationPeriod = framePeriod
             cAmplitude = 0
             filePath = null
             state = State.INITIALIZING
+
         } catch (e: Exception) {
             if (e.message != null) {
                 Log.e(ExtAudioRecorder::class.java.name, e.message)
             } else {
-                Log.e(ExtAudioRecorder::class.java.name, "Unknown error occured while initializing recording")
+                Log.e(ExtAudioRecorder::class.java.name, "Unknown error occurred while initializing recording")
             }
             state = State.ERROR
         }
 
     }
 
-    /**
-     * Sets output file path, call directly after construction/reset.
-
-     * @param output file path
-     */
     fun setOutputFile(argPath: String) {
-        try {
-            if (state == State.INITIALIZING) {
-                filePath = argPath
-                if (!rUncompressed) {
-                    mediaRecorder!!.setOutputFile(filePath)
-                }
-            }
-        } catch (e: Exception) {
-            if (e.message != null) {
-                Log.e(ExtAudioRecorder::class.java.name, e.message)
-            } else {
-                Log.e(ExtAudioRecorder::class.java.name, "Unknown error occured while setting output path")
-            }
-            state = State.ERROR
+        if (state == State.INITIALIZING) {
+            filePath = argPath
         }
-
     }
 
     /**
@@ -300,18 +256,10 @@ class ExtAudioRecorder
     val maxAmplitude: Int
         get() {
             if (state == State.RECORDING) {
-                if (rUncompressed) {
-                    val result = cAmplitude
-                    cAmplitude = 0
-                    return result
-                } else {
-                    try {
-                        return mediaRecorder!!.maxAmplitude
-                    } catch (e: IllegalStateException) {
-                        return 0
-                    }
+                val result = cAmplitude
+                cAmplitude = 0
+                return result
 
-                }
             } else {
                 return 0
             }
@@ -329,56 +277,52 @@ class ExtAudioRecorder
     fun prepare() {
         try {
             if (state == State.INITIALIZING) {
-                if (rUncompressed) {
-                    if ((audioRecorder!!.state == AudioRecord.STATE_INITIALIZED) and (filePath != null)) {
-                        // write file header
-                        val audioFile = File(filePath)
-                        chunkPath = File.createTempFile("chunks-", "", audioFile.parentFile)
-                        chunkPath.delete()
+                if ((audioRecorder.state == AudioRecord.STATE_INITIALIZED) and (filePath != null)) {
+                    // write file header
+                    val audioFile = File(filePath)
+                    chunkPath = File.createTempFile("chunks-", "", audioFile.parentFile)
+                    chunkPath.delete()
 
-                        chunkPath.mkdirs()
+                    chunkPath.mkdirs()
 
-                        randomAccessWriter = RandomAccessFile(filePath, "rw")
+                    randomAccessWriter = RandomAccessFile(filePath, "rw")
 
-                        randomAccessWriter.setLength(0) // Set file length to 0, to prevent unexpected behavior in case the file already existed
-                        randomAccessWriter.writeBytes("RIFF")
-                        randomAccessWriter.writeInt(0) // Final file size not known yet, write 0
-                        randomAccessWriter.writeBytes("WAVE")
-                        randomAccessWriter.writeBytes("fmt ")
-                        randomAccessWriter.writeInt(Integer.reverseBytes(16)) // Sub-chunk size, 16 for PCM
-                        randomAccessWriter.writeShort(java.lang.Short.reverseBytes(1.toShort()).toInt()) // AudioFormat, 1 for PCM
-                        randomAccessWriter.writeShort(java.lang.Short.reverseBytes(nChannels).toInt())// Number of channels, 1 for mono, 2 for stereo
-                        randomAccessWriter.writeInt(Integer.reverseBytes(sRate)) // Sample rate
-                        randomAccessWriter.writeInt(Integer.reverseBytes(sRate * bSamples.toInt() * nChannels.toInt() / 8)) // Byte rate, SampleRate*NumberOfChannels*BitsPerSample/8
-                        randomAccessWriter.writeShort(java.lang.Short.reverseBytes((nChannels * bSamples / 8).toShort()).toInt()) // Block align, NumberOfChannels*BitsPerSample/8
-                        randomAccessWriter.writeShort(java.lang.Short.reverseBytes(bSamples).toInt()) // Bits per sample
-                        randomAccessWriter.writeBytes("data")
-                        randomAccessWriter.writeInt(0) // Data chunk size not known yet, write 0
-
-                        buffer = ByteArray(framePeriod * bSamples / 8 * nChannels)
-                        state = State.READY
-                    } else {
-                        Log.e(ExtAudioRecorder::class.java.name, "prepare() method called on uninitialized recorder")
-                        state = State.ERROR
+                    with(randomAccessWriter) {
+                        setLength(0) // Set file length to 0, to prevent unexpected behavior in case the file already existed
+                        writeBytes("RIFF")
+                        writeInt(0) // Final file size not known yet, write 0
+                        writeBytes("WAVE")
+                        writeBytes("fmt ")
+                        writeInt(Integer.reverseBytes(16)) // Sub-chunk size, 16 for PCM
+                        writeShort(java.lang.Short.reverseBytes(1.toShort()).toInt()) // AudioFormat, 1 for PCM
+                        writeShort(java.lang.Short.reverseBytes(nChannels).toInt())// Number of channels, 1 for mono, 2 for stereo
+                        writeInt(Integer.reverseBytes(sRate)) // Sample rate
+                        writeInt(Integer.reverseBytes(sRate * bSamples.toInt() * nChannels.toInt() / 8)) // Byte rate, SampleRate*NumberOfChannels*BitsPerSample/8
+                        writeShort(java.lang.Short.reverseBytes((nChannels * bSamples / 8).toShort()).toInt()) // Block align, NumberOfChannels*BitsPerSample/8
+                        writeShort(java.lang.Short.reverseBytes(bSamples).toInt()) // Bits per sample
+                        writeBytes("data")
+                        writeInt(0) // Data chunk size not known yet, write 0
                     }
-                } else {
-                    mediaRecorder!!.prepare()
+                    buffer = ByteArray(framePeriod * bSamples / 8 * nChannels)
                     state = State.READY
+                } else {
+                    Log.e(ExtAudioRecorder::class.java.name, "prepare() method called on uninitialized recorder")
+                    state = State.ERROR
                 }
             } else {
                 Log.e(ExtAudioRecorder::class.java.name, "prepare() method called on illegal state")
                 release()
                 state = State.ERROR
             }
+
         } catch (e: Exception) {
             if (e.message != null) {
                 Log.e(ExtAudioRecorder::class.java.name, e.message)
             } else {
-                Log.e(ExtAudioRecorder::class.java.name, "Unknown error occured in prepare()")
+                Log.e(ExtAudioRecorder::class.java.name, "Unknown error occurred in prepare()")
             }
             state = State.ERROR
         }
-
     }
 
     /**
@@ -391,26 +335,17 @@ class ExtAudioRecorder
         if (state == State.RECORDING) {
             stop()
         } else {
-            if ((state == State.READY) and rUncompressed) {
+            if ((state == State.READY)) {
                 try {
                     randomAccessWriter.close() // Remove prepared file
                 } catch (e: IOException) {
-                    Log.e(ExtAudioRecorder::class.java.name, "I/O exception occured while closing output file")
+                    Log.e(ExtAudioRecorder::class.java.name, "I/O exception occurred while closing output file")
                 }
 
                 File(filePath!!).delete()
             }
         }
-
-        if (rUncompressed) {
-            if (audioRecorder != null) {
-                audioRecorder!!.release()
-            }
-        } else {
-            if (mediaRecorder != null) {
-                mediaRecorder!!.release()
-            }
-        }
+        audioRecorder.release()
     }
 
     /**
@@ -427,16 +362,10 @@ class ExtAudioRecorder
                 release()
                 filePath = null // Reset file path
                 cAmplitude = 0 // Reset amplitude
-                if (rUncompressed) {
-                    audioRecorder = AudioRecord(aSource, sRate, nChannels + 1, aFormat, bufferSize)
-                } else {
-                    mediaRecorder = MediaRecorder()
-                    mediaRecorder!!.setAudioSource(MediaRecorder.AudioSource.MIC)
-                    mediaRecorder!!.setOutputFormat(MediaRecorder.OutputFormat.THREE_GPP)
-                    mediaRecorder!!.setAudioEncoder(MediaRecorder.AudioEncoder.AMR_NB)
-                }
+                audioRecorder = AudioRecord(aSource, sRate, nChannels + 1, aFormat, bufferSize)
                 state = State.INITIALIZING
             }
+
         } catch (e: Exception) {
             Log.e(ExtAudioRecorder::class.java.name, e.message)
             state = State.ERROR
@@ -453,13 +382,9 @@ class ExtAudioRecorder
      */
     fun start() {
         if (state == State.READY) {
-            if (rUncompressed) {
-                payloadSize = 0
-                audioRecorder!!.startRecording()
-                audioRecorder!!.read(buffer, 0, buffer.size)
-            } else {
-                mediaRecorder!!.start()
-            }
+            payloadSize = 0
+            audioRecorder.startRecording()
+            audioRecorder.read(buffer, 0, buffer.size)
             state = State.RECORDING
         } else {
             Log.e(ExtAudioRecorder::class.java.name, "start() called on illegal state")
@@ -477,32 +402,28 @@ class ExtAudioRecorder
      */
     fun stop() {
         if (state == State.RECORDING) {
-            if (rUncompressed) {
-                audioRecorder!!.stop()
+            audioRecorder.stop()
 
-                val chunkFile = dumpBufferToFile()
+            val chunkFile = dumpBufferToFile()
 
-                chunkFile.takeIf { it.length() > 0 }?.let { chunk ->
-                    listeners.forEach { it.onChunk(chunk) }
-                }
-
-                try {
-                    randomAccessWriter.seek(4) // Write size to RIFF header
-                    randomAccessWriter.writeInt(Integer.reverseBytes(36 + payloadSize))
-
-                    randomAccessWriter.seek(40) // Write size to Subchunk2Size field
-                    randomAccessWriter.writeInt(Integer.reverseBytes(payloadSize))
-
-                    randomAccessWriter.close()
-
-                } catch (e: IOException) {
-                    Log.e(ExtAudioRecorder::class.java.name, "I/O exception occured while closing output file")
-                    state = State.ERROR
-                }
-
-            } else {
-                mediaRecorder!!.stop()
+            chunkFile.takeIf { it.length() > 0 }?.let { chunk ->
+                listeners.forEach { it.onChunk(chunk) }
             }
+
+            try {
+                randomAccessWriter.seek(4) // Write size to RIFF header
+                randomAccessWriter.writeInt(Integer.reverseBytes(36 + payloadSize))
+
+                randomAccessWriter.seek(40) // Write size to Subchunk2Size field
+                randomAccessWriter.writeInt(Integer.reverseBytes(payloadSize))
+
+                randomAccessWriter.close()
+
+            } catch (e: IOException) {
+                Log.e(ExtAudioRecorder::class.java.name, "I/O exception occured while closing output file")
+                state = State.ERROR
+            }
+
             state = State.STOPPED
         } else {
             Log.e(ExtAudioRecorder::class.java.name, "stop() called on illegal state")
